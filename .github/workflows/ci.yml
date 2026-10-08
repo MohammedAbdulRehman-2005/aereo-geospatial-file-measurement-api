@@ -54,20 +54,20 @@ jobs:
 
       - name: Run Alembic Migrations
         env:
-          DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@localhost:5432/aereo_geo_test
+          DATABASE_URL: "postgresql+psycopg://postgres:postgrespassword@localhost:5432/aereo_geo_test"
         run: |
           alembic upgrade head
 
       - name: Run Tests with Coverage (SQLite In-Memory)
         env:
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
           AI_ENABLED: "false"
         run: |
           python -m pytest --cov=app --cov-report=xml --cov-report=term -v --tb=short
 
       - name: Run Integration Tests (PostgreSQL Database)
         env:
-          DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@localhost:5432/aereo_geo_test
+          DATABASE_URL: "postgresql+psycopg://postgres:postgrespassword@localhost:5432/aereo_geo_test"
           AI_ENABLED: "false"
         run: |
           python -m pytest tests/integration/test_api.py -v --tb=short
