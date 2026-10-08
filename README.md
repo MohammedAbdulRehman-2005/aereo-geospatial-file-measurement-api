@@ -146,8 +146,8 @@ aereo-geospatial-api/
 ### Installation
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/aereo-geospatial-api.git
-cd aereo-geospatial-api
+git clone https://github.com/MohammedAbdulRehman-2005/aereo-geospatial-file-measurement-api.git
+cd aereo-geospatial-file-measurement-api
 
 # Create and activate a virtual environment
 python -m venv .venv
