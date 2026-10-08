@@ -268,6 +268,7 @@ def _persist_features_and_measurements(
             geometry_valid=m.geometry_valid,
             geometry_empty=m.geometry_empty,
             validation_message=m.validation_message,
+            geometry_json=m.geometry_json,
             properties_json=m.properties if m.properties else None,
         )
         db.add(feature)

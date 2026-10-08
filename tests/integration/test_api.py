@@ -15,8 +15,8 @@ def test_health_endpoint(client: TestClient):
     assert "version" in data
 
 
-def test_upload_kml_and_retrieve_measurements(client: TestClient, fixtures_dir: Path):
-    """Full lifecycle: upload KML, get file info, get measurements, get quality."""
+def test_upload_kml_and_retrieve_measurements_and_features(client: TestClient, fixtures_dir: Path):
+    """Full lifecycle: upload KML, get file info, get measurements with geometry, get features."""
     kml_path = fixtures_dir / "small_polygon_4326.kml"
 
     # 1. Upload
@@ -43,7 +43,7 @@ def test_upload_kml_and_retrieve_measurements(client: TestClient, fixtures_dir: 
     assert info_data["status"] == "COMPLETED"
     assert info_data["processing_summary"]["polygon_count"] == 1
 
-    # 3. Get measurements
+    # 3. Get measurements (must expose geometry dict)
     meas_res = client.get(f"/api/files/{file_id}/measurements/")
     assert meas_res.status_code == 200
     meas_data = meas_res.json()
@@ -57,8 +57,25 @@ def test_upload_kml_and_retrieve_measurements(client: TestClient, fixtures_dir: 
     assert feat["area"] > 0
     assert feat["area_unit"] == "m2"
     assert feat["reason"] is None
+    # Expose extracted geometry
+    assert feat["geometry"] is not None
+    assert feat["geometry"]["type"] == "Polygon"
+    assert len(feat["geometry"]["coordinates"]) > 0
 
-    # 4. Get quality report
+    # 4. Get features endpoint (paginated features with geometries)
+    feats_res = client.get(f"/api/files/{file_id}/features/")
+    assert feats_res.status_code == 200
+    feats_data = feats_res.json()
+    assert feats_data["file_id"] == file_id
+    assert feats_data["total_features"] == 1
+    assert feats_data["page"] == 1
+    assert len(feats_data["features"]) == 1
+    f_detail = feats_data["features"][0]
+    assert f_detail["geometry_type"] == "Polygon"
+    assert f_detail["geometry"] is not None
+    assert f_detail["geometry"]["type"] == "Polygon"
+
+    # 5. Get quality report
     qual_res = client.get(f"/api/files/{file_id}/quality/")
     assert qual_res.status_code == 200
     qual_data = qual_res.json()
@@ -67,7 +84,7 @@ def test_upload_kml_and_retrieve_measurements(client: TestClient, fixtures_dir: 
 
 
 def test_upload_shapefile_zip(client: TestClient, fixtures_dir: Path):
-    """Upload valid Shapefile ZIP and verify LineString measurements."""
+    """Upload valid Shapefile ZIP and verify LineString measurements with geometries."""
     zip_path = fixtures_dir / "sample_roads.zip"
 
     with open(zip_path, "rb") as f:
@@ -91,6 +108,47 @@ def test_upload_shapefile_zip(client: TestClient, fixtures_dir: Path):
         assert f["length"] is not None
         assert f["length"] > 0
         assert f["length_unit"] == "m"
+        assert f["geometry"] is not None
+        assert f["geometry"]["type"] == "LineString"
+
+
+def test_features_pagination(client: TestClient, fixtures_dir: Path):
+    """Verify pagination on GET /api/files/{id}/features/."""
+    mixed_path = fixtures_dir / "mixed_geometry.kml"
+    with open(mixed_path, "rb") as f:
+        res = client.post(
+            "/api/files/",
+            files={"file": ("mixed.kml", f, "application/vnd.google-earth.kml+xml")},
+        )
+    file_id = res.json()["id"]
+
+    # Request page 1 with page_size=2
+    p1_res = client.get(f"/api/files/{file_id}/features/?page=1&page_size=2")
+    assert p1_res.status_code == 200
+    p1 = p1_res.json()
+    assert p1["total_features"] == 3
+    assert len(p1["features"]) == 2
+    assert p1["page"] == 1
+
+    # Request page 2 with page_size=2
+    p2_res = client.get(f"/api/files/{file_id}/features/?page=2&page_size=2")
+    assert p2_res.status_code == 200
+    p2 = p2_res.json()
+    assert p2["total_features"] == 3
+    assert len(p2["features"]) == 1
+    assert p2["page"] == 2
+
+
+def test_kml_doctype_entity_rejected(client: TestClient):
+    """Verify KML containing malicious XML DOCTYPE/ENTITY is rejected."""
+    bad_kml = b'<?xml version="1.0"?><!DOCTYPE test [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><kml><Document><Placemark><name>&xxe;</name></Placemark></Document></kml>'
+    res = client.post(
+        "/api/files/",
+        files={"file": ("xxe.kml", io.BytesIO(bad_kml), "application/vnd.google-earth.kml+xml")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["error"]["code"] == "INVALID_GEOSPATIAL_DATA"
 
 
 def test_file_not_found_returns_404(client: TestClient):

@@ -204,7 +204,8 @@ docker compose down -v
 | :--- | :--- | :--- | :--- |
 | `POST` | `/api/files/` | Upload and process vector file (`.kml` or `.zip`) | `201`, `400`, `413` |
 | `GET` | `/api/files/{id}/` | Retrieve file metadata & geometry breakdown | `200`, `404` |
-| `GET` | `/api/files/{id}/measurements/`| Retrieve feature-level metric measurements | `200`, `404` |
+| `GET` | `/api/files/{id}/features/` | Retrieve paginated features with GeoJSON geometries | `200`, `404` |
+| `GET` | `/api/files/{id}/measurements/`| Retrieve feature-level metric measurements & geometries | `200`, `404` |
 | `GET` | `/api/files/{id}/quality/` | Deterministic anomaly report (IQR outliers, invalid rings) | `200`, `404` |
 | `GET` | `/api/files/{id}/insights/` | AI-generated summary from deterministic facts | `200`, `404`, `503` |
 | `GET` | `/health` | Service and database readiness check | `200` |
@@ -225,17 +226,22 @@ curl -X POST http://localhost:8000/api/files/ \
   -F "file=@sample_data/sample_roads.zip"
 ```
 
-### 3. Retrieve Measurements
+### 3. Retrieve Features with Geometries (Paginated)
+```bash
+curl -X GET "http://localhost:8000/api/files/0192d73a-4b95-7800-84cf-cb18d4072892/features/?page=1&page_size=20"
+```
+
+### 4. Retrieve Measurements
 ```bash
 curl -X GET http://localhost:8000/api/files/0192d73a-4b95-7800-84cf-cb18d4072892/measurements/
 ```
 
-### 4. Retrieve Deterministic Quality Report
+### 5. Retrieve Deterministic Quality Report
 ```bash
 curl -X GET http://localhost:8000/api/files/0192d73a-4b95-7800-84cf-cb18d4072892/quality/
 ```
 
-### 5. Retrieve AI Analyst Insights
+### 6. Retrieve AI Analyst Insights
 ```bash
 curl -X GET http://localhost:8000/api/files/0192d73a-4b95-7800-84cf-cb18d4072892/insights/
 ```
@@ -259,6 +265,32 @@ curl -X GET http://localhost:8000/api/files/0192d73a-4b95-7800-84cf-cb18d4072892
 }
 ```
 
+### `GET /api/files/{id}/features/` (200 OK)
+```json
+{
+  "file_id": "b72a094a-4d90-4f79-9e3d-8adb67c534d5",
+  "page": 1,
+  "page_size": 20,
+  "total_features": 3,
+  "features": [
+    {
+      "feature_id": 0,
+      "geometry_type": "Polygon",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[77.5, 12.9], [77.51, 12.9], [77.51, 12.91], [77.5, 12.91], [77.5, 12.9]]
+        ]
+      },
+      "properties": {"name": "Parcel A"},
+      "geometry_valid": true,
+      "geometry_empty": false,
+      "validation_message": null
+    }
+  ]
+}
+```
+
 ### `GET /api/files/{id}/measurements/` (200 OK)
 ```json
 {
@@ -275,6 +307,12 @@ curl -X GET http://localhost:8000/api/files/0192d73a-4b95-7800-84cf-cb18d4072892
       "length": null,
       "length_unit": null,
       "reason": null,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[77.5, 12.9], [77.51, 12.9], [77.51, 12.91], [77.5, 12.91], [77.5, 12.9]]
+        ]
+      },
       "properties": {"name": "Parcel A"},
       "geometry_valid": true,
       "geometry_empty": false,

@@ -112,6 +112,7 @@ class GeoFeature(Base):
     geometry_valid: Mapped[bool] = mapped_column(default=True)
     geometry_empty: Mapped[bool] = mapped_column(default=False)
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    geometry_json: Mapped[dict[str, Any] | None] = mapped_column(JSONBType, nullable=True)
     properties_json: Mapped[dict[str, Any] | None] = mapped_column(JSONBType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow

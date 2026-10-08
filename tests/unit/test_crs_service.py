@@ -64,3 +64,32 @@ def test_geographic_crs_reprojected_to_utm():
     assert res.is_projected is False
     assert res.unit == "m"
     assert "UTM zone EPSG:32643" in res.note
+
+
+def test_southern_hemisphere_resolution():
+    """Verify that coordinates in southern hemisphere resolve to EPSG:327XX."""
+    features = [
+        ParsedFeature(
+            index=0,
+            geometry_type="Point",
+            geometry=Point(151.20, -33.86)  # Sydney
+        )
+    ]
+    res = resolve_measurement_crs(features, "EPSG:4326")
+    assert res.measurement_crs == "EPSG:32756"
+    assert res.unit == "m"
+
+
+def test_large_continental_extent_uses_equal_earth():
+    """Verify that datasets with extent > 20 degrees use Equal Earth (EPSG:8857)."""
+    # Span from lon 10 to 40 (30 degrees extent > 20)
+    features = [
+        ParsedFeature(
+            index=0,
+            geometry_type="Polygon",
+            geometry=Polygon([(10.0, 10.0), (40.0, 10.0), (40.0, 35.0), (10.0, 35.0), (10.0, 10.0)])
+        )
+    ]
+    res = resolve_measurement_crs(features, "EPSG:4326")
+    assert res.measurement_crs == "EPSG:8857"
+    assert "Equal Earth" in res.note

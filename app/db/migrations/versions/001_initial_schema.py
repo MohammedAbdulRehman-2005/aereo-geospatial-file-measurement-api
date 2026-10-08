@@ -45,6 +45,7 @@ def upgrade() -> None:
         sa.Column("geometry_valid", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("geometry_empty", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("validation_message", sa.Text(), nullable=True),
+        sa.Column("geometry_json", sa.JSON().with_variant(postgresql.JSONB(), "postgresql"), nullable=True),
         sa.Column("properties_json", sa.JSON().with_variant(postgresql.JSONB(), "postgresql"), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["file_id"], ["files.id"], ondelete="CASCADE"),

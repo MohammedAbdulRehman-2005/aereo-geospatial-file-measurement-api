@@ -1,4 +1,4 @@
-"""KML parser adapter supporting pure XML parsing and Shapely geometry construction."""
+"""Hardened KML parser adapter with XML entity protection and geometry normalization."""
 from __future__ import annotations
 
 import re
@@ -6,7 +6,15 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Point, Polygon
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Point,
+    Polygon,
+    mapping,
+)
 from shapely.geometry.base import BaseGeometry
 
 from app.core.exceptions import InvalidGeospatialDataError
@@ -24,9 +32,10 @@ def _clean_tag(elem: ET.Element) -> str:
 
 
 def _parse_coordinates(coord_str: str) -> list[tuple[float, float]]:
-    """Parse KML coordinate tuple string 'lon,lat,alt lon,lat,alt'."""
+    """Parse KML coordinate tuple string 'lon,lat,alt lon,lat,alt' robustly."""
     coords: list[tuple[float, float]] = []
-    tokens = re.split(r"\s+", coord_str.strip())
+    cleaned = coord_str.replace(";", " ")
+    tokens = re.split(r"\s+", cleaned.strip())
     for token in tokens:
         if not token:
             continue
@@ -41,8 +50,15 @@ def _parse_coordinates(coord_str: str) -> list[tuple[float, float]]:
     return coords
 
 
+def _close_ring(ring: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Ensure linear ring is properly closed (first point == last point)."""
+    if len(ring) >= 3 and ring[0] != ring[-1]:
+        return list(ring) + [ring[0]]
+    return ring
+
+
 def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
-    """Extract Shapely geometry from a KML XML element."""
+    """Extract Shapely geometry from a KML XML element with ring validation."""
     tag = _clean_tag(elem)
 
     if tag == "Point":
@@ -53,7 +69,7 @@ def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
                     return Point(coords[0])
         return Point()
 
-    elif tag == "LineString":
+    elif tag in ("LineString", "LinearRing"):
         for sub in elem.iter():
             if _clean_tag(sub) == "coordinates" and sub.text:
                 coords = _parse_coordinates(sub.text)
@@ -78,10 +94,11 @@ def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
                     if _clean_tag(sub) == "coordinates" and sub.text:
                         ring = _parse_coordinates(sub.text)
                         if len(ring) >= 3:
-                            inner_rings.append(ring)
+                            inner_rings.append(_close_ring(ring))
 
         if len(outer_ring) >= 3:
-            return Polygon(outer_ring, inner_rings)
+            outer_closed = _close_ring(outer_ring)
+            return Polygon(outer_closed, inner_rings)
         return Polygon()
 
     elif tag in ("MultiGeometry", "MultiPolygon", "MultiLineString"):
@@ -96,15 +113,15 @@ def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
             return MultiPolygon(parts)
         elif all(isinstance(p, LineString) for p in parts):
             return MultiLineString(parts)
-        return parts[0]
+        return GeometryCollection(parts) if len(parts) > 1 else parts[0]
 
     return None
 
 
 class KMLParser(BaseParser):
     """
-    Parses KML files into normalized features.
-    Uses pure-Python XML parsing as default, which is fast and requires no external GDAL DLLs.
+    Hardened KML parser supporting pure XML parsing, XML bomb protection,
+    and GeoJSON geometry normalization.
     """
 
     def parse(self, path: str) -> ParseResult:
@@ -116,6 +133,15 @@ class KMLParser(BaseParser):
             )
 
         logger.info("Parsing KML file", extra={"file_name": file_path.name})
+
+        # --- Security Check: Guard against XML Entity Expansion & XXE ---
+        raw_bytes = file_path.read_bytes()
+        lower_bytes = raw_bytes[:4096].lower()
+        if b"<!entity" in lower_bytes or (b"<!doctype" in lower_bytes and b"system" in lower_bytes):
+            raise InvalidGeospatialDataError(
+                "KML file contains forbidden XML DOCTYPE or ENTITY definition.",
+                details={"file_name": file_path.name},
+            )
 
         try:
             tree = ET.parse(str(file_path))
@@ -146,29 +172,38 @@ class KMLParser(BaseParser):
                     props["description"] = child.text.strip()
                 elif ctag == "ExtendedData":
                     for data_el in child.iter():
-                        if _clean_tag(data_el) == "Data":
+                        tag_name = _clean_tag(data_el)
+                        if tag_name in ("Data", "SimpleData"):
                             d_name = data_el.attrib.get("name")
                             val = "".join(data_el.itertext()).strip()
                             if d_name:
                                 props[d_name] = val
-                elif ctag in ("Polygon", "LineString", "Point", "MultiGeometry"):
+                elif ctag in ("Polygon", "LineString", "Point", "MultiGeometry", "LinearRing"):
                     geom = _parse_geometry_element(child)
 
             # If geometry wasn't direct child, search subtree
             if geom is None:
                 for sub in pm.iter():
                     stag = _clean_tag(sub)
-                    if stag in ("Polygon", "LineString", "Point", "MultiGeometry") and sub != pm:
+                    if stag in ("Polygon", "LineString", "Point", "MultiGeometry", "LinearRing") and sub != pm:
                         geom = _parse_geometry_element(sub)
                         if geom is not None and not geom.is_empty:
                             break
 
             gtype, is_valid, is_empty, msg = self._classify_geometry(geom)
 
+            geom_json: dict[str, Any] | None = None
+            if geom is not None and not is_empty:
+                try:
+                    geom_json = mapping(geom)
+                except Exception:
+                    pass
+
             features.append(ParsedFeature(
                 index=idx,
                 geometry_type=gtype,
                 geometry=geom,
+                geometry_json=geom_json,
                 properties=props,
                 geometry_valid=is_valid,
                 geometry_empty=is_empty,

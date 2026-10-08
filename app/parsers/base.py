@@ -16,6 +16,7 @@ class ParsedFeature:
     geometry_type: str  # Canonical Shapely geometry type string
     geometry: Any | None  # Shapely geometry object or None
     properties: dict[str, Any] = field(default_factory=dict)
+    geometry_json: dict[str, Any] | None = None
     geometry_valid: bool = True
     geometry_empty: bool = False
     validation_message: str | None = None

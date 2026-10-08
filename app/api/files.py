@@ -10,7 +10,12 @@ from app.core.security import validate_upload
 from app.db.session import get_db
 from app.models import GeoFeature, GeoFile, Measurement
 from app.schemas.file import FileInfoResponse, FileUploadResponse, ProcessingSummary
-from app.schemas.measurement import FeatureMeasurementSchema, MeasurementsResponse
+from app.schemas.measurement import (
+    FeatureDetailSchema,
+    FeatureMeasurementSchema,
+    FeaturesResponse,
+    MeasurementsResponse,
+)
 from app.services.ingestion_service import process_upload
 from app.services.validation_service import validate_upload_request
 
@@ -144,6 +149,7 @@ def get_measurements(
             length=msr.value if msr and msr.measurement_type == "length" else None,
             length_unit=msr.unit if msr and msr.measurement_type == "length" else None,
             reason=msr.reason if msr else None,
+            geometry=feat.geometry_json,
             properties=feat.properties_json or {},
             geometry_valid=feat.geometry_valid,
             geometry_empty=feat.geometry_empty,
@@ -157,4 +163,53 @@ def get_measurements(
         measurement_crs=geo_file.measurement_crs,
         features=feature_schemas,
         total_features=len(feature_schemas),
+    )
+
+
+@router.get("/{file_id}/features/", response_model=FeaturesResponse)
+def get_features(
+    file_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+) -> FeaturesResponse:
+    """
+    Retrieve extracted geometries, metadata, and attributes for a processed file.
+    Supports pagination via page and page_size query parameters.
+    """
+    geo_file = db.query(GeoFile).filter(GeoFile.id == file_id).first()
+    if geo_file is None:
+        raise FileNotFoundError(f"File with id '{file_id}' not found.")
+
+    total = db.query(GeoFeature).filter(GeoFeature.file_id == file_id).count()
+    offset = max(0, (page - 1) * page_size)
+
+    features = (
+        db.query(GeoFeature)
+        .filter(GeoFeature.file_id == file_id)
+        .order_by(GeoFeature.feature_index)
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    items = [
+        FeatureDetailSchema(
+            feature_id=f.feature_index,
+            geometry_type=f.geometry_type,
+            geometry=f.geometry_json,
+            properties=f.properties_json or {},
+            geometry_valid=f.geometry_valid,
+            geometry_empty=f.geometry_empty,
+            validation_message=f.validation_message,
+        )
+        for f in features
+    ]
+
+    return FeaturesResponse(
+        file_id=file_id,
+        page=page,
+        page_size=page_size,
+        total_features=total,
+        features=items,
     )

@@ -101,10 +101,19 @@ class ShapefileParser(BaseParser):
 
                     gtype, is_valid, is_empty, msg = self._classify_geometry(geom)
 
+                    geom_json = None
+                    if geom is not None and not is_empty:
+                        try:
+                            from shapely.geometry import mapping
+                            geom_json = mapping(geom)
+                        except Exception:
+                            pass
+
                     features.append(ParsedFeature(
                         index=idx,
                         geometry_type=gtype,
                         geometry=geom,
+                        geometry_json=geom_json,
                         properties=props,
                         geometry_valid=is_valid,
                         geometry_empty=is_empty,

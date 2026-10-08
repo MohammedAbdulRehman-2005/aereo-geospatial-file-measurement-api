@@ -46,9 +46,10 @@ class FeatureMeasurement:
     measurement_crs: str | None
     reason: str | None
     properties: dict[str, Any]
-    geometry_valid: bool
-    geometry_empty: bool
-    validation_message: str | None
+    geometry_json: dict[str, Any] | None = None
+    geometry_valid: bool = True
+    geometry_empty: bool = False
+    validation_message: str | None = None
 
 
 def _latlon_to_utm(lon: float, lat: float, zone: int, northern: bool) -> tuple[float, float]:
@@ -116,7 +117,27 @@ def _project_geometry(
     if source_crs == measurement_crs:
         return geom
 
-    # Match UTM EPSG:326XX (North) or EPSG:327XX (South)
+    # Check if native pyproj Transformer can be used
+    try:
+        from pyproj import Transformer
+        transformer = Transformer.from_crs(source_crs, measurement_crs, always_xy=True)
+
+        def pyproj_coords(coords: Any) -> Any:
+            import numpy as np
+            x_arr = coords[:, 0]
+            y_arr = coords[:, 1]
+            x_out, y_out = transformer.transform(x_arr, y_arr)
+            out = np.column_stack((x_out, y_out))
+            if coords.shape[1] > 2:
+                out = np.column_stack((out, coords[:, 2:]))
+            return out
+
+        import shapely
+        return shapely.transform(geom, pyproj_coords)
+    except Exception as exc:
+        logger.debug("PyProj Transformer fallback", extra={"error": str(exc)})
+
+    # Deterministic Transverse Mercator formulation
     utm_match = re.search(r"EPSG:32([67])(\d{2})", measurement_crs.upper())
     if utm_match:
         hemi = utm_match.group(1)
@@ -137,7 +158,6 @@ def _project_geometry(
         import shapely
         return shapely.transform(geom, transform_coords)
 
-    # If already projected or other system, return geom
     return geom
 
 
@@ -169,6 +189,7 @@ def _measure_single_feature(
         feature_index=feat.index,
         geometry_type=feat.geometry_type,
         properties=feat.properties,
+        geometry_json=feat.geometry_json,
         geometry_valid=feat.geometry_valid,
         geometry_empty=feat.geometry_empty,
         validation_message=feat.validation_message,
@@ -194,6 +215,11 @@ def _measure_single_feature(
             geom = repaired
             base_kwargs["geometry_valid"] = True
             base_kwargs["validation_message"] = "Self-intersection repaired via buffer(0)"
+            try:
+                import shapely.geometry
+                base_kwargs["geometry_json"] = shapely.geometry.mapping(repaired)
+            except Exception:
+                pass
             logger.info(
                 "Geometry repaired using buffer(0)",
                 extra={"feature_index": feat.index},
