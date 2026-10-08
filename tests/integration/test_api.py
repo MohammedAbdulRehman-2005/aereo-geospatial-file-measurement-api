@@ -1,0 +1,183 @@
+"""Integration and API endpoint tests (Specification §15.2)."""
+import io
+from pathlib import Path
+from fastapi.testclient import TestClient
+
+from app.core.config import settings
+
+
+def test_health_endpoint(client: TestClient):
+    """GET /health returns 200 with service status."""
+    res = client.get("/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] in ("healthy", "degraded")
+    assert "version" in data
+
+
+def test_upload_kml_and_retrieve_measurements(client: TestClient, fixtures_dir: Path):
+    """Full lifecycle: upload KML, get file info, get measurements, get quality."""
+    kml_path = fixtures_dir / "small_polygon_4326.kml"
+
+    # 1. Upload
+    with open(kml_path, "rb") as f:
+        res = client.post(
+            "/api/files/",
+            files={"file": ("small_polygon_4326.kml", f, "application/vnd.google-earth.kml+xml")},
+        )
+    assert res.status_code == 201
+    file_data = res.json()
+    file_id = file_data["id"]
+    assert file_data["filename"] == "small_polygon_4326.kml"
+    assert file_data["format"] == "KML"
+    assert file_data["status"] == "COMPLETED"
+    assert file_data["feature_count"] == 1
+    assert file_data["crs"] == "EPSG:4326"
+    assert file_data["measurement_crs"] == "EPSG:32643"
+
+    # 2. Get file info
+    info_res = client.get(f"/api/files/{file_id}/")
+    assert info_res.status_code == 200
+    info_data = info_res.json()
+    assert info_data["id"] == file_id
+    assert info_data["status"] == "COMPLETED"
+    assert info_data["processing_summary"]["polygon_count"] == 1
+
+    # 3. Get measurements
+    meas_res = client.get(f"/api/files/{file_id}/measurements/")
+    assert meas_res.status_code == 200
+    meas_data = meas_res.json()
+    assert meas_data["file_id"] == file_id
+    assert meas_data["measurement_crs"] == "EPSG:32643"
+    assert len(meas_data["features"]) == 1
+    feat = meas_data["features"][0]
+    assert feat["geometry_type"] == "Polygon"
+    assert feat["measurement_type"] == "area"
+    assert feat["area"] is not None
+    assert feat["area"] > 0
+    assert feat["area_unit"] == "m2"
+    assert feat["reason"] is None
+
+    # 4. Get quality report
+    qual_res = client.get(f"/api/files/{file_id}/quality/")
+    assert qual_res.status_code == 200
+    qual_data = qual_res.json()
+    assert qual_data["file_id"] == file_id
+    assert qual_data["invalid_features"] == 0
+
+
+def test_upload_shapefile_zip(client: TestClient, fixtures_dir: Path):
+    """Upload valid Shapefile ZIP and verify LineString measurements."""
+    zip_path = fixtures_dir / "sample_roads.zip"
+
+    with open(zip_path, "rb") as f:
+        res = client.post(
+            "/api/files/",
+            files={"file": ("sample_roads.zip", f, "application/zip")},
+        )
+    assert res.status_code == 201
+    file_data = res.json()
+    assert file_data["format"] == "SHAPEFILE"
+    assert file_data["status"] == "COMPLETED"
+    assert file_data["feature_count"] == 2
+    file_id = file_data["id"]
+
+    meas_res = client.get(f"/api/files/{file_id}/measurements/")
+    assert meas_res.status_code == 200
+    features = meas_res.json()["features"]
+    assert len(features) == 2
+    for f in features:
+        assert f["geometry_type"] == "LineString"
+        assert f["length"] is not None
+        assert f["length"] > 0
+        assert f["length_unit"] == "m"
+
+
+def test_file_not_found_returns_404(client: TestClient):
+    """GET on non-existent file ID returns 404 with structured error envelope."""
+    res = client.get("/api/files/00000000-0000-0000-0000-000000000000/")
+    assert res.status_code == 404
+    data = res.json()
+    assert "error" in data
+    assert data["error"]["code"] == "FILE_NOT_FOUND"
+
+
+def test_unsupported_file_extension_returns_400(client: TestClient):
+    """Upload with unsupported extension (.geojson) returns 400."""
+    fake_data = io.BytesIO(b'{"type": "FeatureCollection"}')
+    res = client.post(
+        "/api/files/",
+        files={"file": ("data.geojson", fake_data, "application/json")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["error"]["code"] == "INVALID_FILE_TYPE"
+
+
+def test_malformed_zip_fails_gracefully(client: TestClient, fixtures_dir: Path):
+    """Zip slip attempt returns 400 INVALID_ARCHIVE."""
+    malicious_zip = fixtures_dir / "malicious_paths.zip"
+    with open(malicious_zip, "rb") as f:
+        res = client.post(
+            "/api/files/",
+            files={"file": ("malicious.zip", f, "application/zip")},
+        )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["error"]["code"] == "INVALID_ARCHIVE"
+
+
+def test_shapefile_missing_components_fails_gracefully(client: TestClient, fixtures_dir: Path):
+    """Shapefile ZIP missing required .shx returns 400 INVALID_ARCHIVE."""
+    missing_zip = fixtures_dir / "missing_component.zip"
+    with open(missing_zip, "rb") as f:
+        res = client.post(
+            "/api/files/",
+            files={"file": ("missing.zip", f, "application/zip")},
+        )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["error"]["code"] == "INVALID_ARCHIVE"
+
+
+def test_ai_insights_disabled_by_default(client: TestClient, fixtures_dir: Path):
+    """GET /insights returns 503 AI_DISABLED when AI_ENABLED=false."""
+    settings.ai_enabled = False
+    kml_path = fixtures_dir / "small_polygon_4326.kml"
+
+    with open(kml_path, "rb") as f:
+        up = client.post(
+            "/api/files/",
+            files={"file": ("small_polygon_4326.kml", f, "application/vnd.google-earth.kml+xml")},
+        )
+    file_id = up.json()["id"]
+
+    res = client.get(f"/api/files/{file_id}/insights/")
+    assert res.status_code == 503
+    assert res.json()["error"]["code"] == "AI_DISABLED"
+
+
+def test_ai_insights_enabled_with_mock_provider(client: TestClient, fixtures_dir: Path):
+    """GET /insights returns valid insights when AI is enabled with mock provider."""
+    settings.ai_enabled = True
+    settings.ai_provider = "mock"
+
+    kml_path = fixtures_dir / "small_polygon_4326.kml"
+    with open(kml_path, "rb") as f:
+        up = client.post(
+            "/api/files/",
+            files={"file": ("small_polygon_4326.kml", f, "application/vnd.google-earth.kml+xml")},
+        )
+    file_id = up.json()["id"]
+
+    res = client.get(f"/api/files/{file_id}/insights/")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["file_id"] == file_id
+    assert data["summary"] != ""
+    assert len(data["key_observations"]) > 0
+    assert "deterministic" in data["disclaimer"].lower()
+
+    # Reset
+    settings.ai_enabled = False
+    settings.ai_provider = "none"
