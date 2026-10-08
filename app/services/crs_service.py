@@ -46,6 +46,7 @@ class CRSInspection:
     is_geographic: bool
     unit_name: str
     is_measurement_suitable: bool
+    is_metre_unit: bool = False
     rejection_reason: str | None = None
 
 
@@ -148,6 +149,7 @@ def inspect_crs(crs_str: str) -> CRSInspection:
                     is_projected=True,
                     is_geographic=False,
                     unit_name="m",
+                    is_metre_unit=True,
                     is_measurement_suitable=True,
                 )
             else:
@@ -156,6 +158,7 @@ def inspect_crs(crs_str: str) -> CRSInspection:
                     is_projected=True,
                     is_geographic=False,
                     unit_name=unit_name,
+                    is_metre_unit=False,
                     is_measurement_suitable=False,
                     rejection_reason=f"Projected CRS uses '{unit_name}' units rather than SI metres.",
                 )
@@ -217,6 +220,24 @@ def _compute_centroid_and_extent(features: Sequence[ParsedFeature]) -> tuple[flo
         return centroid.x, centroid.y, extent
 
 
+def _is_crs_geographically_aligned(crs_obj: Any, lon: float, lat: float) -> bool:
+    """Check whether a dataset centroid (lon, lat) in degrees falls within the CRS area of use."""
+    try:
+        aou = getattr(crs_obj, "area_of_use", None)
+        if aou is None or aou.bounds is None:
+            return True
+        west, south, east, north = aou.bounds
+        # Worldwide CRS covers all longitudes/latitudes
+        if west <= -170 and east >= 170 and south <= -80 and north >= 80:
+            return True
+        buffer_deg = 3.0
+        return (west - buffer_deg <= lon <= east + buffer_deg) and (
+            south - buffer_deg <= lat <= north + buffer_deg
+        )
+    except Exception:
+        return True
+
+
 def resolve_measurement_crs(
     features_or_gdf: Any,
     source_crs_str: str | None,
@@ -224,19 +245,18 @@ def resolve_measurement_crs(
     """
     Resolve the authoritative projected CRS for measurement.
 
-    Steps:
-    1. If source CRS is missing or empty -> raise MissingCRSError.
-    2. Inspect source CRS using authoritative PyProj metadata:
-       - If already projected and suitable for planar metric calculation (e.g., local UTM in metres) -> use directly.
-       - If projected but unsuitable (e.g. EPSG:3857 Web Mercator or non-metre units) -> reproject to an appropriate
-         measurement CRS according to documented policy.
-       - If geographic (e.g. EPSG:4326 in degrees) -> select appropriate measurement CRS.
-    3. Target measurement CRS selection:
-       - Centroid and extent computed across dataset features.
-       - If extent <= REGIONAL_EXTENT_THRESHOLD_DEG (20.0 deg):
-         Select the local UTM zone based on dataset centroid.
-       - If extent > REGIONAL_EXTENT_THRESHOLD_DEG:
-         Select Equal Earth projection (EPSG:8857) to ensure equal-area fidelity over continental extents.
+    Deterministically evaluates:
+    Case A — Geographic CRS (e.g. EPSG:4326): Angular degree units. Reprojected to local UTM zone or Equal Earth.
+    Case B — Web Mercator (EPSG:3857): Conformal distortion. Reprojected to local UTM zone or Equal Earth.
+    Case C — Projected non-metre CRS (e.g. US survey feet): Reprojected to metre-based local UTM zone or Equal Earth.
+    Case D — Projected metre CRS:
+      - If dataset extent > 20° (configurable REGIONAL_EXTENT_THRESHOLD_DEG):
+        Transitions to Equal Earth (EPSG:8857) for continental equal-area integrity.
+      - If dataset extent <= 20°:
+        Verifies geographic alignment between dataset centroid and CRS area of use.
+        If geographically aligned (or area of use covers the dataset): Preserves source CRS.
+        If geographically mismatched (e.g. European UTM applied to Indian dataset):
+        Reprojects to the dataset's actual local UTM zone.
     """
     if not source_crs_str or not source_crs_str.strip():
         raise MissingCRSError(
@@ -253,23 +273,80 @@ def resolve_measurement_crs(
 
     # Authoritative CRS inspection
     inspection = inspect_crs(source_crs_str)
+    from pyproj import CRS
 
-    if inspection.is_measurement_suitable:
+    source_crs_obj = CRS.from_user_input(source_crs_str)
+
+    raw_centroid_x, raw_centroid_y, raw_extent = _compute_centroid_and_extent(features)
+
+    # Determine lon, lat in degrees and extent in degrees.
+    # If the feature coordinates are already in angular degree ranges (-180..180, -90..90),
+    # use them directly; otherwise project from projected coordinates to geographic WGS84.
+    if abs(raw_centroid_x) <= 180.0 and abs(raw_centroid_y) <= 90.0:
+        lon, lat, extent_deg = raw_centroid_x, raw_centroid_y, raw_extent
+    elif inspection.is_projected:
+        try:
+            from pyproj import Transformer
+
+            to_geo = Transformer.from_crs(source_crs_obj, "EPSG:4326", always_xy=True)
+            lon, lat = to_geo.transform(raw_centroid_x, raw_centroid_y)
+            # Estimate extent in degrees from projected metres
+            extent_deg = (
+                (raw_extent / 111000.0) if inspection.is_metre_unit else (raw_extent / 364000.0)
+            )
+        except Exception:
+            lon, lat, extent_deg = raw_centroid_x, raw_centroid_y, 0.0
+    else:
+        lon, lat, extent_deg = raw_centroid_x, raw_centroid_y, raw_extent
+
+    # Case D: Projected metre CRS
+    if inspection.is_projected and inspection.is_metre_unit and inspection.is_measurement_suitable:
+        # Check if dataset extent exceeds the configurable 20° regional limit
+        if extent_deg > REGIONAL_EXTENT_THRESHOLD_DEG:
+            measurement_epsg = "EPSG:8857"
+            note = (
+                f"Source CRS is projected in metres, but dataset extent ({extent_deg:.2f}°) exceeds "
+                f"the configurable threshold ({REGIONAL_EXTENT_THRESHOLD_DEG}°). "
+                "Reprojected to Equal Earth (EPSG:8857) to ensure continental equal-area fidelity."
+            )
+            return CRSResolution(
+                source_crs=source_crs_str,
+                measurement_crs=measurement_epsg,
+                is_projected=True,
+                unit="m",
+                note=note,
+            )
+
+        # Check geographic alignment between dataset centroid and CRS area of use
+        if (
+            features
+            and (raw_centroid_x != 0.0 or raw_centroid_y != 0.0)
+            and not _is_crs_geographically_aligned(source_crs_obj, lon, lat)
+        ):
+            measurement_epsg = _utm_epsg_for_centroid(lon, lat)
+            note = (
+                f"Source CRS ('{source_crs_str}') is projected in metres but geographically mismatched "
+                f"with dataset centroid ({lon:.4f}, {lat:.4f}). "
+                f"Reprojected to matching local UTM zone {measurement_epsg}."
+            )
+            return CRSResolution(
+                source_crs=source_crs_str,
+                measurement_crs=measurement_epsg,
+                is_projected=True,
+                unit="m",
+                note=note,
+            )
+
         return CRSResolution(
             source_crs=source_crs_str,
             measurement_crs=inspection.identified_crs,
             is_projected=True,
             unit="m",
-            note="Source CRS is verified as an authoritative projected CRS in metres.",
+            note="Source CRS is verified as an authoritative projected CRS in metres appropriate for this dataset.",
         )
 
-    # Non-suitable source CRS (Geographic, EPSG:3857, or non-metre projected):
-    # Select appropriate measurement CRS based on centroid and spatial extent.
-    lon, lat, extent_deg = _compute_centroid_and_extent(features)
-
-    # Note: REGIONAL_EXTENT_THRESHOLD_DEG (20.0°) is a configurable application-level engineering threshold
-    # used to determine when a dataset should transition from a local projected CRS strategy (UTM)
-    # to a broader equal-area measurement projection (Equal Earth). It is not a universal geodetic law.
+    # Cases A, B, C (Geographic, Web Mercator, or non-metre projected):
+    # Reproject to local UTM zone or Equal Earth based on extent.
     if extent_deg <= REGIONAL_EXTENT_THRESHOLD_DEG:
         measurement_epsg = _utm_epsg_for_centroid(lon, lat)
         note = (

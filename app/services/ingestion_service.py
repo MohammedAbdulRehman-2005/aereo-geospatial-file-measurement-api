@@ -24,6 +24,7 @@ Business logic lives here. Route handlers must remain thin.
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import (
+    FeatureLimitExceededError,
     GeospatialAPIError,
     InvalidGeospatialDataError,
     MissingCRSError,
@@ -90,19 +92,24 @@ def _determine_file_status(
 
 def process_upload(
     filename: str,
-    file_bytes: bytes,
+    file_source: Path | bytes,
     file_ext: str,
     db: Session,
+    file_size: int | None = None,
 ) -> GeoFile:
     """
     Core processing pipeline. Returns the persisted GeoFile record.
 
-    This function is designed to be called synchronously from the upload
-    route, but is structured so it can later be moved to a background worker
-    without rewriting the API contract.
+    Accepts file_source as either a temporary file Path (preferred for streaming)
+    or in-memory bytes for backwards compatibility.
     """
     start_time = time.monotonic()
     file_id = new_id()
+
+    if isinstance(file_source, Path):
+        file_size_bytes = file_size if file_size is not None else file_source.stat().st_size
+    else:
+        file_size_bytes = len(file_source)
 
     logger.info(
         "Processing started",
@@ -115,7 +122,7 @@ def process_upload(
         filename=filename,
         format=_ext_to_format(file_ext),
         status=FileStatus.PROCESSING,
-        file_size_bytes=len(file_bytes),
+        file_size_bytes=file_size_bytes,
     )
     db.add(geo_file)
     db.commit()
@@ -127,8 +134,11 @@ def process_upload(
         raw_file_path = tmp_path / filename
 
         try:
-            # --- Write uploaded bytes to temp storage ---
-            raw_file_path.write_bytes(file_bytes)
+            # --- Place file into isolated temp sandbox ---
+            if isinstance(file_source, Path):
+                shutil.copyfile(file_source, raw_file_path)
+            else:
+                raw_file_path.write_bytes(file_source)
 
             # --- Parse ---
             parse_result, shp_path = _parse_file(
@@ -138,6 +148,15 @@ def process_upload(
             if not parse_result.features:
                 _mark_failed(db, geo_file, "No features found in the uploaded file.")
                 return geo_file
+
+            if len(parse_result.features) > settings.max_features:
+                raise FeatureLimitExceededError(
+                    f"Feature count ({len(parse_result.features)}) exceeds maximum allowed limit of {settings.max_features} features.",
+                    details={
+                        "feature_count": len(parse_result.features),
+                        "max_features": settings.max_features,
+                    },
+                )
 
             logger.info(
                 "Parsed features",

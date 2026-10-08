@@ -1,6 +1,6 @@
 # Aereo Geospatial File Measurement API
 
-A production-grade, CRS-aware geospatial REST backend designed to ingest vector files (KML, Shapefile ZIP), extract features, calculate polygon area ($m^2$) and LineString length ($m$) using deterministically projected coordinate systems, and expose robust endpoints with optional AI-driven analyst insights.
+A production-oriented, standards-based geospatial REST backend designed to ingest vector files (KML, Shapefile ZIP), extract features, calculate polygon area ($m^2$) and LineString length ($m$) using deterministically projected coordinate systems, and expose robust endpoints with optional AI-driven analyst insights.
 
 ---
 
@@ -84,7 +84,7 @@ The system strictly enforces **Clean Architecture** principles:
 | **ORM & Database** | SQLAlchemy 2.x + Alembic | Declarative persistence with version-controlled schema migrations. |
 | **RDBMS** | PostgreSQL 16 (psycopg 3) / SQLite (tests) | Production durability with unified JSON/JSONB cross-engine support. |
 | **Containerization** | Docker & Docker Compose | Multi-stage, non-root reproducible deployment. |
-| **Testing** | Pytest, HTTPX, Pytest-Asyncio | 100% automated test coverage across unit, security, and API layers. |
+| **Testing** | Pytest, HTTPX, Pytest-Asyncio | Automated test suite (85% statement coverage across app) spanning unit, security, and API layers. |
 
 ---
 
@@ -414,7 +414,7 @@ The processing pipeline executes across distinct stages:
 
 ## 13. CRS Strategy
 Calculating geometric metrics directly on angular coordinates ($EPSG:4326$) is mathematically incorrect because degrees do not represent a uniform linear metric on the Earth's spheroid. 
-Our strategy guarantees mathematical correctness:
+Our strategy provides CRS-aware metric measurements using deterministic geospatial processing:
 
 ### 1. Zone Determination
 Given a geographic dataset with centroid $(\lambda, \phi)$, the UTM Zone $Z$ is calculated as:
@@ -473,18 +473,18 @@ The relational schema is managed through SQLAlchemy models and version-controlle
 ---
 
 ## 17. Testing
-The test suite consists of **42 comprehensive tests** spanning unit, security, and API integration layers, achieving **85% statement coverage** across the codebase:
+The test suite consists of **49 comprehensive tests** spanning unit, security, and API integration layers, achieving **85% statement coverage** across the codebase:
 ```bash
 python -m pytest -v --cov=app --cov-report=term
 ```
 ### Test Coverage Breakdown
-- `tests/unit/test_crs_service.py` (9 tests): Centroid UTM zone calculation, southern hemisphere offsets, large extent fallback, Web Mercator (EPSG:3857) unsuitable rejection, `inspect_crs` metadata validation, and missing CRS rejection.
-- `tests/unit/test_measurement_service.py` (6 tests): Known polygon area verification, known LineString length calculation, point no-measurement validation, bowtie self-intersection repair with provenance, and `CRSTransformationFailedError` handling.
-- `tests/unit/test_kml_parser.py` (7 tests): Valid Point/LineString/Polygon/MultiGeometry parsing, polygons with inner rings (holes), LinearRing closure enforcement, XXE injection rejection, billion laughs entity bomb rejection, and corrupt coordinate handling.
+- `tests/unit/test_crs_service.py` (12 tests): Centroid UTM zone calculation, southern hemisphere offsets, large extent fallback, Web Mercator (EPSG:3857) unsuitable rejection, `inspect_crs` metadata validation, non-metre projected CRS handling, geographically mismatched projected CRS handling, custom WKT parsing, and missing CRS rejection.
+- `tests/unit/test_measurement_service.py` (6 tests): Known polygon area verification, known LineString length calculation, point no-measurement validation, empty geometry handling, bowtie self-intersection repair with provenance, and `CRSTransformationFailedError` handling.
+- `tests/unit/test_kml_parser.py` (9 tests): Valid Point/LineString/Polygon/MultiGeometry parsing, polygons with inner rings (holes), LinearRing closure enforcement, XXE injection rejection, billion laughs entity bomb rejection, corrupt coordinate handling, exact MAX_FEATURES boundary acceptance, and feature limit exceeding rejection.
 - `tests/unit/test_quality_service.py` (2 tests): Mixed geometry detection, descriptive statistics calculation, and IQR outlier detection.
-- `tests/unit/test_zip_security.py` (5 tests): Zip Slip path traversal mitigation, nested zip rejection, decompression bomb size limit enforcement, and missing Shapefile companion detection.
-- `tests/unit/test_ai_layer.py` (2 tests): Schema validation and output parsing.
-- `tests/integration/test_api.py` (11 tests): Complete lifecycle tests (upload $\to$ info $\to$ features $\to$ measurements $\to$ quality $\to$ insights), Shapefile ZIP extraction and measurement, HTTP 400/404/413 error mapping, feature GeoJSON geometry extraction, and healthchecks.
+- `tests/unit/test_zip_security.py` (5 tests): Zip Slip path traversal mitigation, nested zip rejection, decompression bomb size limit enforcement, empty zip rejection, and missing Shapefile companion detection.
+- `tests/unit/test_ai_layer.py` (2 tests): Schema validation, mock provider adherence, and invalid severity rejection.
+- `tests/integration/test_api.py` (13 tests): Complete lifecycle tests (upload $\to$ info $\to$ features $\to$ measurements $\to$ quality $\to$ insights), Shapefile ZIP extraction and measurement, HTTP 400/404/413 error mapping, invalid PRJ handling, feature limit enforcement, feature GeoJSON geometry extraction with repair flags, and healthchecks.
 
 ---
 
@@ -501,8 +501,8 @@ The AI layer functions as an **observational analyst** rather than an arbitrary 
 
 ## 19. Performance
 - **Vectorized GEOS Transformations**: Batch coordinates are transformed using Shapely 2.x C-level arrays rather than per-vertex Python loops.
-- **Streaming Uploads & Tempfiles**: Multipart streams write to OS-managed temporary directories with deterministic cleanup in `finally` blocks.
-- **Sub-Second Processing**: Typical vector datasets (< 1,000 features) process in under 150 ms end-to-end.
+- **Streaming Uploads & Tempfiles**: Multipart streams write to OS-managed temporary files in 64 KB chunks with proactive byte-counter limits, enforcing maximum upload sizes before accumulating in memory and guaranteeing deterministic cleanup in `finally` blocks.
+- **Fast Vectorized Processing**: Planar calculations and transformations utilize GEOS C-bindings in Shapely and C-level PROJ pipelines in PyProj, providing predictable sub-second throughput without custom Python loop overhead.
 - **Database Connection Pooling**: Configured with `pool_size=10`, `max_overflow=20`, and `pool_pre_ping=True` to eliminate stale connections.
 
 ---

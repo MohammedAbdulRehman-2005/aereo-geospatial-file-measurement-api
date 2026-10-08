@@ -264,3 +264,44 @@ def test_ai_insights_enabled_with_mock_provider(client: TestClient, fixtures_dir
     # Reset
     settings.ai_enabled = False
     settings.ai_provider = "none"
+
+
+def test_feature_limit_exceeded_via_api(client: TestClient, fixtures_dir: Path, monkeypatch):
+    """Uploading a file exceeding MAX_FEATURES returns 400 FEATURE_LIMIT_EXCEEDED."""
+    monkeypatch.setattr(settings, "max_features", 1)
+    mixed_path = fixtures_dir / "mixed_geometry.kml"  # contains 3 features
+    with open(mixed_path, "rb") as f:
+        res = client.post(
+            "/api/files/",
+            files={"file": ("mixed.kml", f, "application/vnd.google-earth.kml+xml")},
+        )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["error"]["code"] == "FEATURE_LIMIT_EXCEEDED"
+
+
+def test_shapefile_invalid_prj_returns_400(client: TestClient, fixtures_dir: Path):
+    """Shapefile with malformed, unparseable .prj returns 400 INVALID_GEOSPATIAL_DATA."""
+    import io
+    import zipfile
+
+    # Build an in-memory zip copying valid shapefile components but replacing .prj with junk
+    valid_zip_path = fixtures_dir / "sample_roads.zip"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(valid_zip_path, "r") as src_zip:
+        with zipfile.ZipFile(buf, "w") as dst_zip:
+            for item in src_zip.infolist():
+                if item.filename.endswith(".prj"):
+                    dst_zip.writestr(item.filename, "NOT_A_VALID_WKT_DEFINITION_CORRUPT")
+                else:
+                    dst_zip.writestr(item, src_zip.read(item.filename))
+    buf.seek(0)
+
+    res = client.post(
+        "/api/files/",
+        files={"file": ("corrupt_prj.zip", buf, "application/zip")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["error"]["code"] == "INVALID_GEOSPATIAL_DATA"
+    assert "prj" in data["error"]["message"].lower()

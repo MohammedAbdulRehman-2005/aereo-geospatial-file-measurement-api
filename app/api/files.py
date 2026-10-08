@@ -1,5 +1,5 @@
-"""Files API router: upload, info, measurements, quality, and insights."""
-from __future__ import annotations
+import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
@@ -32,39 +32,49 @@ async def upload_file(
     """
     Upload and process a geospatial file (KML or zipped Shapefile).
 
-    Validates the file, extracts features, resolves CRS, computes measurements,
-    and persists everything. Returns a summary of the processed file.
+    Streams chunks directly to a temporary file while validating upload bounds,
+    extracts features, resolves CRS, computes measurements, and persists everything.
     """
     CHUNK_SIZE = 64 * 1024
-    chunks: list[bytes] = []
     total_bytes = 0
-
-    while True:
-        chunk = await file.read(CHUNK_SIZE)
-        if not chunk:
-            break
-        total_bytes += len(chunk)
-        if total_bytes > settings.max_upload_bytes:
-            raise FileTooLargeError(
-                f"Upload size exceeded maximum allowed limit of {settings.max_upload_mb} MB.",
-                details={"max_bytes": settings.max_upload_bytes},
-            )
-        chunks.append(chunk)
-
-    file_bytes = b"".join(chunks)
 
     safe_name, ext = validate_upload_request(
         filename=file.filename or "upload",
         content_type=file.content_type or "",
-        file_size=total_bytes,
+        file_size=0,
     )
 
-    geo_file = process_upload(
-        filename=safe_name,
-        file_bytes=file_bytes,
-        file_ext=ext,
-        db=db,
-    )
+    with tempfile.NamedTemporaryFile(
+        delete=False, prefix="aereo_up_", suffix=ext, dir=settings.temp_dir or None
+    ) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        try:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > settings.max_upload_bytes:
+                    raise FileTooLargeError(
+                        f"Upload size exceeded maximum allowed limit of {settings.max_upload_mb} MB.",
+                        details={"max_bytes": settings.max_upload_bytes},
+                    )
+                tmp_file.write(chunk)
+            tmp_file.flush()
+
+            geo_file = process_upload(
+                filename=safe_name,
+                file_source=tmp_path,
+                file_ext=ext,
+                db=db,
+                file_size=total_bytes,
+            )
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
     return FileUploadResponse(
         id=geo_file.id,

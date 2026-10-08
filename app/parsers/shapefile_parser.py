@@ -1,15 +1,16 @@
 """Shapefile parser adapter using pyshp and Shapely."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
 import shapefile
+from pyproj import CRS
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
-from app.core.exceptions import InvalidGeospatialDataError
+from app.core.config import settings
+from app.core.exceptions import FeatureLimitExceededError, InvalidGeospatialDataError
 from app.core.logging import get_logger
 from app.parsers.base import BaseParser, ParsedFeature, ParseResult
 
@@ -17,43 +18,30 @@ logger = get_logger(__name__)
 
 
 def _extract_crs_from_prj(prj_path: Path) -> str | None:
-    """Read .prj file and detect EPSG or projection name authoritatively using PyProj."""
+    """Read .prj file and detect EPSG or preserve canonical WKT authoritatively using PyProj."""
     if not prj_path.exists():
         return None
+
+    content = prj_path.read_text(encoding="utf-8", errors="ignore").strip()
+    if not content:
+        raise InvalidGeospatialDataError(
+            f"Shapefile .prj file is empty: {prj_path.name}",
+            details={"filename": prj_path.name},
+        )
+
     try:
-        content = prj_path.read_text(encoding="utf-8", errors="ignore").strip()
-        if not content:
-            return None
-
-        # Authoritative PyProj WKT parsing
-        try:
-            from pyproj import CRS
-
-            crs_obj = CRS.from_wkt(content)
-            epsg = crs_obj.to_epsg()
-            if epsg:
-                return f"EPSG:{epsg}"
-            if crs_obj.name:
-                return crs_obj.name
-            return content
-        except Exception as pyproj_err:
-            logger.debug("PyProj CRS.from_wkt fallback", extra={"error": str(pyproj_err)})
-
-        # Graceful fallback heuristic for raw WKT or projection strings
-        epsg_match = re.search(r'AUTHORITY\["EPSG",\s*"?(\d+)"?\]', content)
-        if epsg_match:
-            return f"EPSG:{epsg_match.group(1)}"
-        if "WGS_1984" in content or "WGS 84" in content or "4326" in content:
-            return "EPSG:4326"
-        if "3857" in content or "Pseudo-Mercator" in content:
-            return "EPSG:3857"
-        name_match = re.match(r'^[A-Z_]+\["([^"]+)"', content)
-        if name_match:
-            return name_match.group(1)
-        return content or "UNKNOWN_PROJECTED"
+        crs_obj = CRS.from_wkt(content)
     except Exception as exc:
-        logger.warning("Error reading .prj file", extra={"error": str(exc)})
-        return None
+        raise InvalidGeospatialDataError(
+            f"Failed to parse CRS from .prj file '{prj_path.name}': {exc}",
+            details={"filename": prj_path.name, "error": str(exc)},
+        ) from exc
+
+    epsg = crs_obj.to_epsg()
+    if epsg is not None:
+        return f"EPSG:{epsg}"
+    # Preserve the canonical WKT representation for valid custom CRS without an EPSG mapping
+    return crs_obj.to_wkt()
 
 
 class ShapefileParser(BaseParser):
@@ -84,6 +72,12 @@ class ShapefileParser(BaseParser):
                     raise InvalidGeospatialDataError(
                         f"Shapefile contains no features: {shp_path.name}",
                         details={"filename": shp_path.name},
+                    )
+
+                if len(sf) > settings.max_features:
+                    raise FeatureLimitExceededError(
+                        f"Shapefile feature count ({len(sf)}) exceeds maximum allowed limit of {settings.max_features} features.",
+                        details={"feature_count": len(sf), "max_features": settings.max_features},
                     )
 
                 field_names = [f[0] for f in sf.fields[1:]]  # skip DeletionFlag

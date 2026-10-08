@@ -235,3 +235,46 @@ def test_malicious_billion_laughs_rejected_by_defusedxml():
         assert "forbidden" in str(exc_info.value).lower()
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_feature_limit_at_boundary(monkeypatch):
+    """Verify boundary: exactly MAX_FEATURES placemarks is permitted."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "max_features", 3)
+
+    kml = """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+  <Placemark><Point><coordinates>77.1,12.1,0</coordinates></Point></Placemark>
+  <Placemark><Point><coordinates>77.2,12.2,0</coordinates></Point></Placemark>
+  <Placemark><Point><coordinates>77.3,12.3,0</coordinates></Point></Placemark>
+</Document></kml>"""
+    path = _write_temp_kml(kml)
+    try:
+        parser = KMLParser()
+        res = parser.parse(str(path))
+        assert len(res.features) == 3
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_feature_limit_exceeded_rejected(monkeypatch):
+    """Verify boundary: MAX_FEATURES + 1 placemarks raises FeatureLimitExceededError."""
+    from app.core.config import settings
+    from app.core.exceptions import FeatureLimitExceededError
+
+    monkeypatch.setattr(settings, "max_features", 2)
+
+    kml = """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+  <Placemark><Point><coordinates>77.1,12.1,0</coordinates></Point></Placemark>
+  <Placemark><Point><coordinates>77.2,12.2,0</coordinates></Point></Placemark>
+  <Placemark><Point><coordinates>77.3,12.3,0</coordinates></Point></Placemark>
+</Document></kml>"""
+    path = _write_temp_kml(kml)
+    try:
+        parser = KMLParser()
+        with pytest.raises(FeatureLimitExceededError) as exc_info:
+            parser.parse(str(path))
+        assert "exceeds maximum allowed limit" in str(exc_info.value)
+    finally:
+        path.unlink(missing_ok=True)

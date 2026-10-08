@@ -150,3 +150,58 @@ def test_large_continental_extent_uses_equal_earth():
     res = resolve_measurement_crs(features, "EPSG:4326")
     assert res.measurement_crs == "EPSG:8857"
     assert "Equal Earth" in res.note
+
+
+def test_projected_non_metre_crs_reprojected():
+    """Verify Case C: Projected CRS with non-metre units (e.g. US survey feet) is reprojected."""
+    # EPSG:2263 is NAD83 / New York Long Island (ftUS) (units: US survey foot)
+    inspection = inspect_crs("EPSG:2263")
+    assert inspection.is_projected is True
+    assert inspection.is_metre_unit is False
+    assert inspection.is_measurement_suitable is False
+
+    # When resolving, it must be reprojected to an authoritative metre CRS
+    features = [
+        ParsedFeature(
+            index=0,
+            geometry_type="Point",
+            geometry=Point(-74.00, 40.71),  # New York
+        )
+    ]
+    res = resolve_measurement_crs(features, "EPSG:2263")
+    assert res.measurement_crs == "EPSG:32618"
+    assert res.unit == "m"
+
+
+def test_projected_geographically_mismatched_crs_reprojected():
+    """Verify Case D: Projected metre CRS mismatched with data location is reprojected to local UTM."""
+    # EPSG:32633 is UTM Zone 33N (Europe), but data points are in Bangalore, India (lon 77.5, lat 12.9)
+    features = [
+        ParsedFeature(
+            index=0,
+            geometry_type="Polygon",
+            geometry=Polygon([(77.5, 12.9), (77.6, 12.9), (77.6, 13.0), (77.5, 13.0), (77.5, 12.9)]),
+        )
+    ]
+    res = resolve_measurement_crs(features, "EPSG:32633")
+    # Must detect mismatch with India centroid and reproject to UTM Zone 43N
+    assert res.measurement_crs == "EPSG:32643"
+    assert "geographically mismatched" in res.note
+
+
+def test_custom_valid_wkt_crs():
+    """Verify that a valid custom WKT CRS without an EPSG number is inspected authoritatively."""
+    # Custom Transverse Mercator WKT
+    wkt = (
+        'PROJCS["Custom_Grid",'
+        'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],'
+        'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],'
+        'PROJECTION["Transverse_Mercator"],'
+        'PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],'
+        'PARAMETER["Central_Meridian",75.0],PARAMETER["Scale_Factor",0.9996],'
+        'PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]'
+    )
+    inspection = inspect_crs(wkt)
+    assert inspection.is_projected is True
+    assert inspection.is_metre_unit is True
+    assert inspection.is_measurement_suitable is True

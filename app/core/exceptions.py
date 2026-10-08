@@ -14,6 +14,7 @@ class ErrorCode(StrEnum):
     CRS_TRANSFORMATION_FAILED = "CRS_TRANSFORMATION_FAILED"
     FILE_NOT_FOUND = "FILE_NOT_FOUND"
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    FEATURE_LIMIT_EXCEEDED = "FEATURE_LIMIT_EXCEEDED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     PROCESSING_ERROR = "PROCESSING_ERROR"
     AI_PROVIDER_UNAVAILABLE = "AI_PROVIDER_UNAVAILABLE"
@@ -83,6 +84,11 @@ class FileNotFoundError(GeospatialAPIError):
 class FileTooLargeError(GeospatialAPIError):
     http_status = 413
     error_code = ErrorCode.FILE_TOO_LARGE
+
+
+class FeatureLimitExceededError(GeospatialAPIError):
+    http_status = 400
+    error_code = ErrorCode.FEATURE_LIMIT_EXCEEDED
 
 
 class ProcessingError(GeospatialAPIError):

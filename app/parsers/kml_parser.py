@@ -18,7 +18,8 @@ from shapely.geometry import (
 )
 from shapely.geometry.base import BaseGeometry
 
-from app.core.exceptions import InvalidGeospatialDataError
+from app.core.config import settings
+from app.core.exceptions import FeatureLimitExceededError, InvalidGeospatialDataError
 from app.core.logging import get_logger
 from app.parsers.base import BaseParser, ParsedFeature, ParseResult
 
@@ -164,6 +165,12 @@ class KMLParser(BaseParser):
             raise InvalidGeospatialDataError(
                 "KML file contains no Placemark features.",
                 details={"filename": file_path.name},
+            )
+
+        if len(placemarks) > settings.max_features:
+            raise FeatureLimitExceededError(
+                f"KML feature count ({len(placemarks)}) exceeds maximum allowed limit of {settings.max_features} features.",
+                details={"feature_count": len(placemarks), "max_features": settings.max_features},
             )
 
         features: list[ParsedFeature] = []
