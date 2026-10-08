@@ -8,7 +8,7 @@ A production-oriented, standards-based geospatial REST backend designed to inges
 Geospatial data arrives from diverse client sources (drones, GIS field surveyors, CAD tools) in varied vector formats—predominantly **KML (Keyhole Markup Language)** and **ESRI Shapefiles (multi-component ZIPs)**. 
 A naive approach calculates area or distance directly on latitude/longitude angular degrees ($°$), producing meaningless metrics (e.g., "0.001 square degrees") or distorted distances that vary wildly by latitude. Furthermore, real-world geospatial datasets often contain mixed geometry types, corrupted polygon rings (self-intersections/bowties), missing coordinate system metadata, and hostile archive payloads (Zip Slip attacks, decompression bombs).
 
-Organizations require an automated, deterministic service that ingests these vector datasets, validates geometry integrity, resolves an optimal local projected coordinate reference system (CRS), computes mathematically accurate measurements in SI units ($m$ and $m^2$), gracefully isolates faulty features, and generates explainable summaries.
+Organizations require an automated, deterministic service that ingests these vector datasets, validates geometry integrity, resolves an appropriate projected measurement CRS, computes CRS-aware metric measurements in SI units ($m$ and $m^2$), gracefully isolates faulty features, and generates explainable summaries.
 
 ---
 
@@ -16,10 +16,10 @@ Organizations require an automated, deterministic service that ingests these vec
 The **Aereo Geospatial File Measurement API** delivers an end-to-end processing pipeline built on **FastAPI**, **SQLAlchemy 2.x**, **Shapely 2.x**, and **PostgreSQL**:
 1. **Secure Ingestion**: Validates uploads, enforces size limits, and sanitizes ZIP archives with path traversal prevention.
 2. **Unified Parsing Layer**: Decoupled parser adapters for both KML and ESRI Shapefiles normalizing features into canonical representations.
-3. **Rigorous CRS Resolution**: Rejects degree-based arithmetic; dynamically resolves the optimal UTM zone from the dataset's centroid (or equal-area projections for continental datasets).
+3. **Rigorous CRS Resolution**: Rejects degree-based arithmetic; dynamically resolves an appropriate projected measurement CRS (such as local UTM from dataset centroid or Equal Earth for large extents) via a configurable CRS selection policy.
 4. **Deterministic Measurement Engine**: Calculates area in square meters ($m^2$) for `Polygon`/`MultiPolygon` and length in meters ($m$) for `LineString`/`MultiLineString`, while explicitly categorizing non-measurable geometries (`Point`).
 5. **Fault Isolation & Geometry Repair**: Self-intersecting rings undergo a deterministic topology repair attempt via `buffer(0)`; corrupt individual features are recorded without crashing the parent batch.
-6. **Ground-Truth AI Insight Layer**: An optional reasoning layer that observes structured factual summaries to explain dataset findings without ever altering ground-truth mathematical measurements.
+6. **Ground-Truth AI Insight Layer**: An optional reasoning layer that observes structured factual summaries to explain dataset findings without ever altering authoritative metric measurements.
 
 ---
 
@@ -48,8 +48,8 @@ The **Aereo Geospatial File Measurement API** delivers an end-to-end processing 
 │                  Geospatial Processing Engine                │
 │                                                              │
 │  ┌───────────────┐     ┌────────────────┐     ┌───────────┐  │
-│  │ Parsers       │ ──> │ CRS Resolution │ ──> │ Geodesic  │  │
-│  │ (KML/Shapefile│     │ (UTM Centroid) │     │ Measure   │  │
+│  │ Parsers       │ ──> │ CRS Resolution │ ──> │ Projected │  │
+│  │ (KML/Shapefile│     │ (CRS Policy)   │     │ Measure   │  │
 │  └───────────────┘     └────────────────┘     └─────┬─────┘  │
 └─────────────────────────────────────────────────────┼────────┘
                                                       │
@@ -90,8 +90,8 @@ The system strictly enforces **Clean Architecture** principles:
 
 ## 5. Features
 - **Dual Vector Format Support**: Ingest `.kml` XML files and `.zip` archives containing ESRI Shapefile sets (`.shp`, `.shx`, `.dbf`, `.prj`).
-- **Strict CRS Handling**: Auto-selects the optimal UTM projection from feature centroids; never calculates in geographic degrees.
-- **Accurate Metric Calculations**: Outputs explicit SI units ($m^2$ and $m$) rounded to 4 decimal places.
+- **Strict CRS Handling**: Auto-selects an appropriate projected measurement CRS (such as local UTM or Equal Earth) from feature centroids and CRS metadata; never calculates in geographic degrees.
+- **CRS-Aware Metric Measurements**: Outputs explicit SI units ($m^2$ and $m$) rounded to 4 decimal places.
 - **Fault Isolation & Geometry Quality**: Validates geometry topology, attempts deterministic repair via `buffer(0)` while transparently reporting repair provenance (`geometry_repaired`), and isolates invalid features without aborting the batch.
 - **Deterministic Quality Auditing**: Calculates Interquartile Range (IQR) bounds to detect statistical outliers in area and length.
 - **Archive Security Hardening**: Built-in Zip Slip path traversal detection and decompression bomb limits.
@@ -406,7 +406,7 @@ The processing pipeline executes across distinct stages:
 2. **Normalized Feature Extraction**: Converts geometries into Shapely primitives with extracted attributes stored in a JSON key-value store.
 3. **Topological Classification**: Assesses whether each geometry is non-empty, simple, and valid. Self-intersecting rings undergo a deterministic topology repair attempt via `buffer(0)`.
 4. **Centroid & Extent Calculation**: Aggregates dataset bounds using unary unions to pinpoint spatial extent.
-5. **Dynamic CRS Resolution**: Chooses an optimal projected CRS based on spatial location and authoritative PyProj metadata inspection.
+5. **Dynamic CRS Resolution**: Selects an appropriate projected measurement CRS based on spatial extent, centroid, and authoritative PyProj metadata inspection via a configurable CRS selection policy.
 6. **Forward Metric Projection**: Transforms coordinates using authoritative `pyproj.Transformer(always_xy=True)` into metric Easting/Northing or equal-area coordinates.
 7. **Vectorized Measurement**: Derives area ($m^2$) or Euclidean length ($m$).
 
@@ -501,7 +501,7 @@ The AI layer functions as an **observational analyst** rather than an arbitrary 
 
 ## 19. Performance
 - **Vectorized GEOS Transformations**: Batch coordinates are transformed using Shapely 2.x C-level arrays rather than per-vertex Python loops.
-- **Streaming Uploads & Tempfiles**: Multipart streams write to OS-managed temporary files in 64 KB chunks with proactive byte-counter limits, enforcing maximum upload sizes before accumulating in memory and guaranteeing deterministic cleanup in `finally` blocks.
+- **Streaming Uploads & Tempfiles**: Multipart streams write to OS-managed temporary files in 64 KB chunks with proactive byte-counter limits, enforcing maximum upload sizes before accumulating in memory and ensuring deterministic cleanup in `finally` blocks.
 - **Fast Vectorized Processing**: Planar calculations and transformations utilize GEOS C-bindings in Shapely and C-level PROJ pipelines in PyProj, providing predictable sub-second throughput without custom Python loop overhead.
 - **Database Connection Pooling**: Configured with `pool_size=10`, `max_overflow=20`, and `pool_pre_ping=True` to eliminate stale connections.
 
@@ -530,7 +530,7 @@ The AI layer functions as an **observational analyst** rather than an arbitrary 
 ## 22. Learning
 - **Authoritative Geodesy vs Handwritten Projections**: Relying on PROJ and PyProj eliminates subtle ellipsoid and datum shift inaccuracies while providing standard EPSG/WKT compliance across thousands of coordinate reference systems.
 - **Defensive Archive & XML Ingestion**: Zip Slip vulnerabilities and XML Entity Expansion attacks cannot be caught with simple string matching; canonicalizing paths with `is_relative_to` and using `defusedxml` is mandatory across operating systems.
-- **Structuring Reliable AI in Mission-Critical Systems**: Establishing strict boundaries where AI reasons exclusively over deterministic structured metadata guarantees that calculations remain auditable and reproducible.
+- **Structuring Reliable AI in Mission-Critical Systems**: Establishing strict boundaries where AI reasons exclusively over deterministic structured metadata is designed to keep authoritative calculations auditable and reproducible.
 
 ---
 
