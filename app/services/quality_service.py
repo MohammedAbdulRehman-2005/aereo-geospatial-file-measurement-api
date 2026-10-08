@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass, field
-from typing import Any
 
 from app.core.logging import get_logger
 from app.services.measurement_service import FeatureMeasurement
@@ -59,7 +58,7 @@ def _iqr_outlier_indices(values: list[float], feature_indices: list[int]) -> lis
     lower = q1 - 1.5 * iqr
     upper = q3 + 1.5 * iqr
     return [
-        fi for v, fi in zip(values, feature_indices)
+        fi for v, fi in zip(values, feature_indices, strict=False)
         if v < lower or v > upper
     ]
 
@@ -155,7 +154,7 @@ def run_quality_checks(
     area_msmts = [m for m in measurements if m.measurement_type == "area" and m.value is not None]
     polygon_stats: dict[str, float] | None = None
     if area_msmts:
-        area_values = [m.value for m in area_msmts]  # type: ignore[misc]
+        area_values: list[float] = [float(m.value) for m in area_msmts if m.value is not None]
         area_indices = [m.feature_index for m in area_msmts]
         polygon_stats = _describe(area_values)
 
@@ -175,7 +174,7 @@ def run_quality_checks(
     len_msmts = [m for m in measurements if m.measurement_type == "length" and m.value is not None]
     length_stats: dict[str, float] | None = None
     if len_msmts:
-        length_values = [m.value for m in len_msmts]  # type: ignore[misc]
+        length_values: list[float] = [float(m.value) for m in len_msmts if m.value is not None]
         length_indices = [m.feature_index for m in len_msmts]
         length_stats = _describe(length_values)
 

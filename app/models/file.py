@@ -1,11 +1,12 @@
 """SQLAlchemy models for the Aereo Geospatial API."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     DateTime,
     Float,
@@ -14,7 +15,6 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    JSON,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -23,7 +23,7 @@ JSONBType = JSON().with_variant(JSONB, "postgresql")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 class Base(DeclarativeBase):
@@ -110,7 +110,9 @@ class GeoFeature(Base):
     feature_index: Mapped[int] = mapped_column(Integer, nullable=False)
     geometry_type: Mapped[str] = mapped_column(String(64), nullable=False)
     geometry_valid: Mapped[bool] = mapped_column(default=True)
+    geometry_repaired: Mapped[bool] = mapped_column(default=False)
     geometry_empty: Mapped[bool] = mapped_column(default=False)
+    validation_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     geometry_json: Mapped[dict[str, Any] | None] = mapped_column(JSONBType, nullable=True)
     properties_json: Mapped[dict[str, Any] | None] = mapped_column(JSONBType, nullable=True)
@@ -125,7 +127,7 @@ class GeoFeature(Base):
 
 
 class Measurement(Base):
-    """Area or length measurement for a feature."""
+    """Area or length measurement for a feature with full provenance."""
 
     __tablename__ = "measurements"
 
@@ -136,7 +138,10 @@ class Measurement(Base):
     measurement_type: Mapped[str] = mapped_column(String(16), nullable=False)
     value: Mapped[float | None] = mapped_column(Float, nullable=True)
     unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_crs: Mapped[str | None] = mapped_column(String(64), nullable=True)
     measurement_crs: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    geometry_repaired: Mapped[bool] = mapped_column(default=False)
     reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow

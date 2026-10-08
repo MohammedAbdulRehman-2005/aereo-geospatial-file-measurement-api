@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -37,7 +36,6 @@ from app.core.exceptions import (
     GeospatialAPIError,
     InvalidGeospatialDataError,
     MissingCRSError,
-    ProcessingError,
 )
 from app.core.logging import get_logger
 from app.models import (
@@ -46,6 +44,8 @@ from app.models import (
     GeoFeature,
     GeoFile,
     Measurement,
+)
+from app.models import (
     ProcessingError as DBProcessingError,
 )
 from app.parsers.base import ParseResult
@@ -53,7 +53,7 @@ from app.parsers.kml_parser import KMLParser
 from app.parsers.shapefile_parser import ShapefileParser
 from app.services.crs_service import CRSResolution, resolve_measurement_crs
 from app.services.measurement_service import FeatureMeasurement, measure_features
-from app.services.quality_service import QualityReport, run_quality_checks
+from app.services.quality_service import run_quality_checks
 from app.utils.ids import new_id
 from app.utils.zip_security import find_shapefile_components, validate_and_extract_zip
 
@@ -173,7 +173,7 @@ def process_upload(
             measurements = measure_features(parse_result.features, crs_resolution)
 
             # --- Quality analysis ---
-            quality_report = run_quality_checks(measurements, parse_result.source_crs)
+            _ = run_quality_checks(measurements, parse_result.source_crs)
 
             # --- Persist features + measurements ---
             _persist_features_and_measurements(
@@ -186,7 +186,7 @@ def process_upload(
             geo_file.source_crs = crs_resolution.source_crs
             geo_file.measurement_crs = crs_resolution.measurement_crs
             geo_file.feature_count = len(parse_result.features)
-            geo_file.completed_at = datetime.now(tz=timezone.utc)
+            geo_file.completed_at = datetime.now(tz=UTC)
             db.commit()
 
             duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -204,7 +204,7 @@ def process_upload(
 
             return geo_file
 
-        except GeospatialAPIError as exc:
+        except GeospatialAPIError:
             try:
                 db.delete(geo_file)
                 db.commit()
@@ -234,16 +234,16 @@ def _parse_file(
 ) -> tuple[ParseResult, Path | None]:
     """Select parser and return ParseResult. Handles ZIP extraction."""
     if file_ext == ".kml":
-        parser = KMLParser()
-        return parser.parse(str(raw_file_path)), None
+        kml_parser = KMLParser()
+        return kml_parser.parse(str(raw_file_path)), None
 
     elif file_ext == ".zip":
         extract_dir = tmp_dir / "extracted"
         extracted_files = validate_and_extract_zip(raw_file_path, extract_dir)
         components = find_shapefile_components(extracted_files)
         shp_path = components[".shp"]
-        parser = ShapefileParser()
-        return parser.parse(str(shp_path)), shp_path
+        shp_parser = ShapefileParser()
+        return shp_parser.parse(str(shp_path)), shp_path
 
     raise InvalidGeospatialDataError(
         f"Unsupported file extension: {file_ext}",
@@ -257,7 +257,7 @@ def _persist_features_and_measurements(
     measurements: list[FeatureMeasurement],
     crs_resolution: CRSResolution,
 ) -> None:
-    """Bulk-insert features and their measurements."""
+    """Bulk-insert features and their measurements with full provenance."""
     for m in measurements:
         feat_id = new_id()
         feature = GeoFeature(
@@ -266,7 +266,9 @@ def _persist_features_and_measurements(
             feature_index=m.feature_index,
             geometry_type=m.geometry_type,
             geometry_valid=m.geometry_valid,
+            geometry_repaired=m.geometry_repaired,
             geometry_empty=m.geometry_empty,
+            validation_status=m.validation_status,
             validation_message=m.validation_message,
             geometry_json=m.geometry_json,
             properties_json=m.properties if m.properties else None,
@@ -279,7 +281,10 @@ def _persist_features_and_measurements(
             measurement_type=m.measurement_type,
             value=m.value,
             unit=m.unit,
-            measurement_crs=crs_resolution.measurement_crs,
+            source_crs=m.source_crs,
+            measurement_crs=m.measurement_crs or crs_resolution.measurement_crs,
+            method=m.method,
+            geometry_repaired=m.geometry_repaired,
             reason=m.reason,
         )
         db.add(msr)
@@ -290,7 +295,7 @@ def _persist_features_and_measurements(
 def _mark_failed(db: Session, geo_file: GeoFile, message: str) -> None:
     geo_file.status = FileStatus.FAILED
     geo_file.error_message = message
-    geo_file.completed_at = datetime.now(tz=timezone.utc)
+    geo_file.completed_at = datetime.now(tz=UTC)
     db.commit()
 
 

@@ -11,6 +11,7 @@ class ErrorCode(StrEnum):
     INVALID_SHAPEFILE_ARCHIVE = "INVALID_SHAPEFILE_ARCHIVE"
     INVALID_GEOSPATIAL_DATA = "INVALID_GEOSPATIAL_DATA"
     MISSING_CRS = "MISSING_CRS"
+    CRS_TRANSFORMATION_FAILED = "CRS_TRANSFORMATION_FAILED"
     FILE_NOT_FOUND = "FILE_NOT_FOUND"
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     VALIDATION_ERROR = "VALIDATION_ERROR"
@@ -69,7 +70,12 @@ class MissingCRSError(GeospatialAPIError):
     error_code = ErrorCode.MISSING_CRS
 
 
-class FileNotFoundError(GeospatialAPIError):  # noqa: A001
+class CRSTransformationFailedError(GeospatialAPIError):
+    http_status = 400
+    error_code = ErrorCode.CRS_TRANSFORMATION_FAILED
+
+
+class FileNotFoundError(GeospatialAPIError):
     http_status = 404
     error_code = ErrorCode.FILE_NOT_FOUND
 

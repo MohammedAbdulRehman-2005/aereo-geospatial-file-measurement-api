@@ -1,11 +1,12 @@
-"""Hardened KML parser adapter with XML entity protection and geometry normalization."""
+"""Hardened KML parser adapter using defusedxml and Shapely geometry normalization."""
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+import defusedxml.ElementTree as defused_ET
+from defusedxml.common import DefusedXmlException, DTDForbidden, EntitiesForbidden
 from shapely.geometry import (
     GeometryCollection,
     LineString,
@@ -19,16 +20,17 @@ from shapely.geometry.base import BaseGeometry
 
 from app.core.exceptions import InvalidGeospatialDataError
 from app.core.logging import get_logger
-from app.parsers.base import BaseParser, ParseResult, ParsedFeature
+from app.parsers.base import BaseParser, ParsedFeature, ParseResult
 
 logger = get_logger(__name__)
 
 KML_DEFAULT_CRS = "EPSG:4326"
 
 
-def _clean_tag(elem: ET.Element) -> str:
+def _clean_tag(elem: Any) -> str:
     """Return local XML tag without namespace."""
-    return elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+    tag = getattr(elem, "tag", "")
+    return tag.split("}")[-1] if "}" in tag else tag
 
 
 def _parse_coordinates(coord_str: str) -> list[tuple[float, float]]:
@@ -51,14 +53,19 @@ def _parse_coordinates(coord_str: str) -> list[tuple[float, float]]:
 
 
 def _close_ring(ring: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Ensure linear ring is properly closed (first point == last point)."""
-    if len(ring) >= 3 and ring[0] != ring[-1]:
-        return list(ring) + [ring[0]]
+    """
+    Ensure linear ring is properly closed (first point == last point per OGC specifications).
+    If unclosed and len >= 3, append the first point.
+    """
+    if len(ring) >= 3:
+        if ring[0] != ring[-1]:
+            return list(ring) + [ring[0]]
+        return ring
     return ring
 
 
-def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
-    """Extract Shapely geometry from a KML XML element with ring validation."""
+def _parse_geometry_element(elem: Any) -> BaseGeometry | None:
+    """Extract Shapely geometry from a KML XML element with ring closure and validation."""
     tag = _clean_tag(elem)
 
     if tag == "Point":
@@ -98,7 +105,10 @@ def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
 
         if len(outer_ring) >= 3:
             outer_closed = _close_ring(outer_ring)
-            return Polygon(outer_closed, inner_rings)
+            try:
+                return Polygon(outer_closed, inner_rings)
+            except Exception:
+                return Polygon()
         return Polygon()
 
     elif tag in ("MultiGeometry", "MultiPolygon", "MultiLineString"):
@@ -120,7 +130,7 @@ def _parse_geometry_element(elem: ET.Element) -> BaseGeometry | None:
 
 class KMLParser(BaseParser):
     """
-    Hardened KML parser supporting pure XML parsing, XML bomb protection,
+    Hardened KML parser supporting defusedxml parsing, XML bomb / XXE protection,
     and GeoJSON geometry normalization.
     """
 
@@ -134,18 +144,15 @@ class KMLParser(BaseParser):
 
         logger.info("Parsing KML file", extra={"file_name": file_path.name})
 
-        # --- Security Check: Guard against XML Entity Expansion & XXE ---
-        raw_bytes = file_path.read_bytes()
-        lower_bytes = raw_bytes[:4096].lower()
-        if b"<!entity" in lower_bytes or (b"<!doctype" in lower_bytes and b"system" in lower_bytes):
-            raise InvalidGeospatialDataError(
-                "KML file contains forbidden XML DOCTYPE or ENTITY definition.",
-                details={"file_name": file_path.name},
-            )
-
+        # --- Hardened XML Parsing using defusedxml ---
         try:
-            tree = ET.parse(str(file_path))
+            tree = defused_ET.parse(str(file_path))
             root = tree.getroot()
+        except (DefusedXmlException, DTDForbidden, EntitiesForbidden) as exc:
+            raise InvalidGeospatialDataError(
+                f"KML file contains forbidden XML DOCTYPE or ENTITY definition: {exc}",
+                details={"file_name": file_path.name, "error": str(exc)},
+            ) from exc
         except Exception as exc:
             raise InvalidGeospatialDataError(
                 f"Failed to parse KML file XML structure: {file_path.name}",

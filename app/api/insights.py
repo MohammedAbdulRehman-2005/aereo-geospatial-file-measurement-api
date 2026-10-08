@@ -4,7 +4,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AIDisabledError, AIProviderUnavailableError, FileNotFoundError
 from app.db.session import get_db
 from app.schemas.insight import InsightResponse
 from app.services.insight_service import generate_insights_for_file

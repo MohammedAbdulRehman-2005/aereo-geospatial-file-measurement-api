@@ -7,9 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import FileNotFoundError
 from app.db.session import get_db
-from app.models import GeoFeature, GeoFile, Measurement
+from app.models import GeoFeature, GeoFile
 from app.services.measurement_service import FeatureMeasurement
-from app.services.quality_service import QualityFlag, QualityReport, run_quality_checks
+from app.services.quality_service import run_quality_checks
 
 router = APIRouter(prefix="/api/files", tags=["quality"])
 

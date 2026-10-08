@@ -11,34 +11,46 @@ from shapely.geometry.base import BaseGeometry
 
 from app.core.exceptions import InvalidGeospatialDataError
 from app.core.logging import get_logger
-from app.parsers.base import BaseParser, ParseResult, ParsedFeature
+from app.parsers.base import BaseParser, ParsedFeature, ParseResult
 
 logger = get_logger(__name__)
 
 
 def _extract_crs_from_prj(prj_path: Path) -> str | None:
-    """Read .prj file and detect EPSG or projection name."""
+    """Read .prj file and detect EPSG or projection name authoritatively using PyProj."""
     if not prj_path.exists():
         return None
     try:
         content = prj_path.read_text(encoding="utf-8", errors="ignore").strip()
         if not content:
             return None
-        # Check for EPSG code inside AUTHORITY["EPSG","XXXX"]
+
+        # Authoritative PyProj WKT parsing
+        try:
+            from pyproj import CRS
+
+            crs_obj = CRS.from_wkt(content)
+            epsg = crs_obj.to_epsg()
+            if epsg:
+                return f"EPSG:{epsg}"
+            if crs_obj.name:
+                return crs_obj.name
+            return content
+        except Exception as pyproj_err:
+            logger.debug("PyProj CRS.from_wkt fallback", extra={"error": str(pyproj_err)})
+
+        # Graceful fallback heuristic for raw WKT or projection strings
         epsg_match = re.search(r'AUTHORITY\["EPSG",\s*"?(\d+)"?\]', content)
         if epsg_match:
             return f"EPSG:{epsg_match.group(1)}"
-        # Check for WGS 84 / GCS_WGS_1984
         if "WGS_1984" in content or "WGS 84" in content or "4326" in content:
             return "EPSG:4326"
-        # Check for Web Mercator
         if "3857" in content or "Pseudo-Mercator" in content:
             return "EPSG:3857"
-        # Extract projection/coordinate system name
         name_match = re.match(r'^[A-Z_]+\["([^"]+)"', content)
         if name_match:
             return name_match.group(1)
-        return "UNKNOWN_PROJECTED"
+        return content or "UNKNOWN_PROJECTED"
     except Exception as exc:
         logger.warning("Error reading .prj file", extra={"error": str(exc)})
         return None
@@ -92,7 +104,7 @@ class ShapefileParser(BaseParser):
                     props: dict[str, Any] = {}
                     try:
                         record_values = shape_rec.record
-                        for fname, val in zip(field_names, record_values):
+                        for fname, val in zip(field_names, record_values, strict=False):
                             if isinstance(val, bytes):
                                 val = val.decode("utf-8", errors="ignore")
                             props[fname] = val

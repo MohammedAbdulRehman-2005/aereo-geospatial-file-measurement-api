@@ -1,8 +1,6 @@
 """AI Insight Service: builds structured context and calls the AI provider."""
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -11,9 +9,9 @@ from app.ai.prompts import PROMPT_VERSION
 from app.ai.provider import get_provider
 from app.ai.schemas import InsightOutput
 from app.core.config import settings
-from app.core.exceptions import AIDisabledError, AIProviderUnavailableError
+from app.core.exceptions import AIDisabledError
 from app.core.logging import get_logger
-from app.models import GeoFeature, GeoFile, InsightReport, Measurement
+from app.models import GeoFeature, GeoFile, InsightReport
 from app.utils.ids import new_id
 
 logger = get_logger(__name__)
@@ -32,19 +30,18 @@ def _build_context(geo_file: GeoFile, db: Session) -> dict[str, Any]:
     for f in features:
         geom_counts[f.geometry_type] = geom_counts.get(f.geometry_type, 0) + 1
 
-    total_polygon_area = sum(
-        m.value for m in measurements
-        if m and m.measurement_type == "area" and m.value is not None
-    )
-    total_linestring_length = sum(
-        m.value for m in measurements
-        if m and m.measurement_type == "length" and m.value is not None
-    )
+    total_polygon_area = 0.0
+    total_linestring_length = 0.0
+    unsupported_count = 0
+    for m in measurements:
+        if m is not None and m.value is not None:
+            if m.measurement_type == "area":
+                total_polygon_area += float(m.value)
+            elif m.measurement_type == "length":
+                total_linestring_length += float(m.value)
+        if m is not None and m.reason == "UNSUPPORTED_GEOMETRY_TYPE":
+            unsupported_count += 1
     invalid_count = sum(1 for f in features if not f.geometry_valid)
-    unsupported_count = sum(
-        1 for m in measurements
-        if m and m.reason == "UNSUPPORTED_GEOMETRY_TYPE"
-    )
 
     return {
         "file": {

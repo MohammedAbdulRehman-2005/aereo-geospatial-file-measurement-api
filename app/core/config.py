@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     temp_dir: str = ""  # Empty means system default
 
     @model_validator(mode="after")
-    def validate_ai_config(self) -> "Settings":
+    def validate_ai_config(self) -> Settings:
         if self.ai_enabled and self.ai_provider not in ("none", "mock"):
             if not self.ai_api_key:
                 raise ValueError(

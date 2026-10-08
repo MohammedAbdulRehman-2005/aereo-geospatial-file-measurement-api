@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from app.ai.base import BaseAIProvider
-from app.ai.prompts import ANALYSIS_PROMPT_TEMPLATE, PROMPT_VERSION, SYSTEM_PROMPT
+from app.ai.prompts import ANALYSIS_PROMPT_TEMPLATE, SYSTEM_PROMPT
 from app.core.config import settings
 from app.core.exceptions import AIProviderUnavailableError
 from app.core.logging import get_logger
@@ -100,8 +100,7 @@ class GeminiProvider(BaseAIProvider):
             # Strip markdown code blocks if present
             if raw_text.startswith("```"):
                 raw_text = raw_text.split("```")[1]
-                if raw_text.startswith("json"):
-                    raw_text = raw_text[4:]
+                raw_text = raw_text.removeprefix("json")
             return json.loads(raw_text)
         except Exception as exc:
             raise AIProviderUnavailableError(

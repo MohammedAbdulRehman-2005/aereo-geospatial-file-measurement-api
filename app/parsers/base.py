@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import geopandas as gpd
+if TYPE_CHECKING:
+    import geopandas as gpd
 
 
 @dataclass

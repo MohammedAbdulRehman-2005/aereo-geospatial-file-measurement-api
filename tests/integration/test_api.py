@@ -1,6 +1,7 @@
 """Integration and API endpoint tests (Specification §15.2)."""
 import io
 from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
@@ -53,6 +54,13 @@ def test_upload_kml_and_retrieve_measurements_and_features(client: TestClient, f
     feat = meas_data["features"][0]
     assert feat["geometry_type"] == "Polygon"
     assert feat["measurement_type"] == "area"
+    assert feat["value"] is not None
+    assert feat["value"] > 0
+    assert feat["unit"] == "m2"
+    assert feat["source_crs"] == "EPSG:4326"
+    assert feat["measurement_crs"] == "EPSG:32643"
+    assert feat["method"] == "planar_projected_area"
+    assert feat["geometry_repaired"] is False
     assert feat["area"] is not None
     assert feat["area"] > 0
     assert feat["area_unit"] == "m2"
@@ -74,6 +82,8 @@ def test_upload_kml_and_retrieve_measurements_and_features(client: TestClient, f
     assert f_detail["geometry_type"] == "Polygon"
     assert f_detail["geometry"] is not None
     assert f_detail["geometry"]["type"] == "Polygon"
+    assert f_detail["crs"] == "EPSG:4326"
+    assert f_detail["geometry_repaired"] is False
 
     # 5. Get quality report
     qual_res = client.get(f"/api/files/{file_id}/quality/")
@@ -105,11 +115,26 @@ def test_upload_shapefile_zip(client: TestClient, fixtures_dir: Path):
     assert len(features) == 2
     for f in features:
         assert f["geometry_type"] == "LineString"
+        assert f["measurement_type"] == "length"
+        assert f["value"] is not None
+        assert f["value"] > 0
+        assert f["unit"] == "m"
+        assert f["method"] == "planar_projected_length"
         assert f["length"] is not None
         assert f["length"] > 0
         assert f["length_unit"] == "m"
         assert f["geometry"] is not None
         assert f["geometry"]["type"] == "LineString"
+
+    # Verify GET /api/files/{id}/features/ returns Shapefile features with geometry
+    feats_res = client.get(f"/api/files/{file_id}/features/")
+    assert feats_res.status_code == 200
+    feats_data = feats_res.json()
+    assert feats_data["total_features"] == 2
+    for shp_feat in feats_data["features"]:
+        assert shp_feat["geometry_type"] == "LineString"
+        assert shp_feat["geometry"] is not None
+        assert shp_feat["geometry"]["type"] == "LineString"
 
 
 def test_features_pagination(client: TestClient, fixtures_dir: Path):

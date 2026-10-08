@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 # Force SQLite for test execution
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -17,12 +17,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
+
 settings.database_url = "sqlite:///:memory:"
 
-from app.db.session import get_db
-import app.db.session as session_module
-from app.main import app
-from app.models.file import Base
+import app.db.session as session_module  # noqa: E402
+from app.db.session import get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.file import Base  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

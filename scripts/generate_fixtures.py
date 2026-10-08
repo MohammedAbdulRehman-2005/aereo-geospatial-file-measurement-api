@@ -1,6 +1,7 @@
 """Script to generate all required test fixtures using pure-Python libraries."""
 import os
 import zipfile
+
 import shapefile
 
 fixtures_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures"))

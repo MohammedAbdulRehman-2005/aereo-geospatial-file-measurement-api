@@ -3,8 +3,10 @@ import io
 import tempfile
 import zipfile
 from pathlib import Path
+
 import pytest
 
+from app.core.config import settings
 from app.core.exceptions import InvalidArchiveError
 from app.utils.zip_security import find_shapefile_components, validate_and_extract_zip
 
@@ -60,6 +62,26 @@ def test_empty_zip_rejected():
             validate_and_extract_zip(zip_path, extract_dir)
 
         assert "empty" in str(exc_info.value).lower()
+
+
+def test_decompression_bomb_size_limit_rejected(monkeypatch):
+    """Verify that archives exceeding decompressed bytes limit are aborted and rejected."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("test.shp", b"A" * 5000)
+
+    # Mock maximum extracted bytes to 1000 bytes via property
+    monkeypatch.setattr(type(settings), "max_extracted_bytes", property(lambda self: 1000))
+
+    with tempfile.TemporaryDirectory() as td:
+        zip_path = Path(td) / "bomb.zip"
+        zip_path.write_bytes(buf.getvalue())
+        extract_dir = Path(td) / "extracted"
+
+        with pytest.raises(InvalidArchiveError) as exc_info:
+            validate_and_extract_zip(zip_path, extract_dir)
+
+        assert "exceed" in str(exc_info.value).lower()
 
 
 def test_shapefile_missing_components_rejected():

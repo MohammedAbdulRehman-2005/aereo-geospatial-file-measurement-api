@@ -1,10 +1,8 @@
 """Validation service: pre-processing checks before parsing."""
 from __future__ import annotations
 
-from app.core.config import settings
-from app.core.exceptions import FileTooLargeError, InvalidFileTypeError
-from app.core.security import ALLOWED_EXTENSIONS, sanitize_filename, validate_upload
 from app.core.logging import get_logger
+from app.core.security import sanitize_filename, validate_upload
 
 logger = get_logger(__name__)
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import FileNotFoundError
+from app.core.config import settings
+from app.core.exceptions import FileNotFoundError, FileTooLargeError
 from app.core.logging import get_logger
-from app.core.security import validate_upload
 from app.db.session import get_db
-from app.models import GeoFeature, GeoFile, Measurement
+from app.models import GeoFeature, GeoFile
 from app.schemas.file import FileInfoResponse, FileUploadResponse, ProcessingSummary
 from app.schemas.measurement import (
     FeatureDetailSchema,
@@ -35,11 +35,28 @@ async def upload_file(
     Validates the file, extracts features, resolves CRS, computes measurements,
     and persists everything. Returns a summary of the processed file.
     """
-    file_bytes = await file.read()
+    CHUNK_SIZE = 64 * 1024
+    chunks: list[bytes] = []
+    total_bytes = 0
+
+    while True:
+        chunk = await file.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > settings.max_upload_bytes:
+            raise FileTooLargeError(
+                f"Upload size exceeded maximum allowed limit of {settings.max_upload_mb} MB.",
+                details={"max_bytes": settings.max_upload_bytes},
+            )
+        chunks.append(chunk)
+
+    file_bytes = b"".join(chunks)
+
     safe_name, ext = validate_upload_request(
         filename=file.filename or "upload",
         content_type=file.content_type or "",
-        file_size=len(file_bytes),
+        file_size=total_bytes,
     )
 
     geo_file = process_upload(
@@ -144,15 +161,23 @@ def get_measurements(
             feature_id=feat.feature_index,
             geometry_type=feat.geometry_type,
             measurement_type=msr.measurement_type if msr else "none",
+            value=msr.value if msr else None,
+            unit=msr.unit if msr else None,
+            source_crs=msr.source_crs if (msr and msr.source_crs) else geo_file.source_crs,
+            measurement_crs=msr.measurement_crs if (msr and msr.measurement_crs) else geo_file.measurement_crs,
+            method=msr.method if msr else None,
+            geometry_repaired=feat.geometry_repaired or (msr.geometry_repaired if msr else False),
             area=msr.value if msr and msr.measurement_type == "area" else None,
             area_unit=msr.unit if msr and msr.measurement_type == "area" else None,
             length=msr.value if msr and msr.measurement_type == "length" else None,
             length_unit=msr.unit if msr and msr.measurement_type == "length" else None,
+            measurement=msr.value if msr else None,
             reason=msr.reason if msr else None,
             geometry=feat.geometry_json,
             properties=feat.properties_json or {},
             geometry_valid=feat.geometry_valid,
             geometry_empty=feat.geometry_empty,
+            validation_status=feat.validation_status or ("valid" if feat.geometry_valid else "invalid"),
             validation_message=feat.validation_message,
         )
         feature_schemas.append(schema)
@@ -198,9 +223,12 @@ def get_features(
             feature_id=f.feature_index,
             geometry_type=f.geometry_type,
             geometry=f.geometry_json,
+            crs=geo_file.source_crs,
             properties=f.properties_json or {},
             geometry_valid=f.geometry_valid,
+            geometry_repaired=f.geometry_repaired,
             geometry_empty=f.geometry_empty,
+            validation_status=f.validation_status or ("valid" if f.geometry_valid else "invalid"),
             validation_message=f.validation_message,
         )
         for f in features

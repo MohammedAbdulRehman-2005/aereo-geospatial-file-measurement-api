@@ -8,7 +8,6 @@ Prevents:
 """
 from __future__ import annotations
 
-import os
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -85,16 +84,21 @@ def validate_and_extract_zip(
 
                 total_uncompressed += member.file_size
 
-            # Decompression bomb guard
+            CHUNK_SIZE = 64 * 1024  # 64 KB streaming chunks
+
+            # Decompression bomb guard on declared header size
             if total_uncompressed > settings.max_extracted_bytes:
                 raise InvalidArchiveError(
                     f"ZIP archive uncompressed size "
                     f"({total_uncompressed // (1024*1024)} MB) exceeds limit "
                     f"({settings.max_extracted_mb} MB).",
+                    details={"max_bytes": settings.max_extracted_bytes},
                 )
 
-            # Extract safely
+            # Extract safely with streaming chunks and live byte accounting
             extract_dir.mkdir(parents=True, exist_ok=True)
+            cumulative_extracted = 0
+
             for member in members:
                 if member.is_dir():
                     continue
@@ -102,7 +106,14 @@ def validate_and_extract_zip(
                 target_path = extract_dir / safe_name
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(target_path, "wb") as dst:
-                    dst.write(src.read())
+                    while chunk := src.read(CHUNK_SIZE):
+                        cumulative_extracted += len(chunk)
+                        if cumulative_extracted > settings.max_extracted_bytes:
+                            raise InvalidArchiveError(
+                                f"ZIP archive decompressed size exceeded limit ({settings.max_extracted_mb} MB).",
+                                details={"max_bytes": settings.max_extracted_bytes},
+                            )
+                        dst.write(chunk)
 
     except zipfile.BadZipFile as exc:
         raise InvalidArchiveError(
